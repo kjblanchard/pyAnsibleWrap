@@ -1,0 +1,38 @@
+--- 
+- name: Create Ec2 Instances
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Create EC2 Block
+      amazon.aws.ec2_instance:
+        region: us-east-2
+        key_name: awsBlanchardKeypairOnedrivePersonal
+        security_group: default
+        instance_type: t2.medium
+        image_id: ami-0080d4df14fd99725
+        wait: yes
+        wait_timeout: 500
+        tags:
+          name: appservers
+          os: ubuntu
+        vpc_subnet_id: subnet-6b9d2627
+        network:
+          assign_public_ip: yes
+      register: ec2
+      delegate_to: localhost
+    - name: Debug info of instance
+      debug: var=ec2
+    - name : Add instance to host group
+      add_host:
+          hostname: "{{ item.network_interfaces[0].public_ip }}"
+          groupname: launched
+      loop: "{{ ec2.instances }}"
+    - name: Wait for SSH to come up
+      local_action:
+        module: wait_for
+        host: "{{ item.network_interfaces[0].public_ip }}"
+        port: 22
+        delay: 10
+        timeout: 120
+      loop: "{{ ec2.instances }}"
