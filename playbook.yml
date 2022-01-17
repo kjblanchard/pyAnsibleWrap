@@ -1,16 +1,41 @@
 --- 
 - name: Create Ec2 Instances
   hosts: localhost
+  vars_files: 
+    - vars.yml
   connection: local
   gather_facts: false
   tasks:
+    - name: Get Security Group
+      amazon.aws.ec2_group_info:
+        filters:
+          "tag:Name": SSH
+        region: "{{ region }}"
+      register: security_group
+    
+    - name: Get AMI id
+      amazon.aws.ec2_ami_info:
+        filters:
+          name: '*ubuntu-bionic-18.04-amd64-server-*'
+          architecture: x86_64
+          virtualization-type: hvm
+          root-device-type: ebs
+        region: "{{ region }}"
+        owners: 099720109477
+      register: ami
+    
+    - name: Sort to get the newest AMI id
+      set_fact:
+        newest_ami: >
+          {{ ami.images | sort(attribute='creation_date') | last }}
+      
     - name: Create EC2 Block
       amazon.aws.ec2_instance:
         region: us-east-2
         key_name: awsBlanchardKeypairOnedrivePersonal
-        security_group: default
-        instance_type: t2.medium
-        image_id: ami-0080d4df14fd99725
+        security_group: "{{ security_group.get('security_groups')[0].get('group_name') }}"
+        instance_type: t2.micro
+        image_id: "{{ newest_ami.image_id }}"
         wait: yes
         wait_timeout: 500
         tags:
@@ -18,21 +43,35 @@
           os: ubuntu
         vpc_subnet_id: subnet-6b9d2627
         network:
-          assign_public_ip: yes
+          assign_public_ip: no
       register: ec2
       delegate_to: localhost
     - name: Debug info of instance
       debug: var=ec2
-    - name : Add instance to host group
-      add_host:
-          hostname: "{{ item.network_interfaces[0].public_ip }}"
-          groupname: launched
-      loop: "{{ ec2.instances }}"
+    - name: Wait for instance to not be in pending state
+      wait_for:
+        timeout: 30
+    -  name: Get Eip and attach to instance
+       community.aws.ec2_eip:
+         device_id: "{{ ec2.get('instance_ids')[0] }}"
+         region: "{{ region }}"
+       register: eip
     - name: Wait for SSH to come up
       local_action:
         module: wait_for
-        host: "{{ item.network_interfaces[0].public_ip }}"
+        host: "{{ eip.get('public_ip') }}"
         port: 22
         delay: 10
         timeout: 120
-      loop: "{{ ec2.instances }}"
+    - name: Add instance to local group
+      add_host:
+        hostname: "{{ eip.get('public_ip') }}"
+        groupname: new
+    
+    - name: Install apt updates on instance
+      apt:
+        name: "*"
+        state: latest
+        install_recommends: no
+      delegate_to: "{{ eip.get('public_ip') }}"
+
